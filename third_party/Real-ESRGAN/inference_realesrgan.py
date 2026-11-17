@@ -1,7 +1,15 @@
+import os
 import argparse
 import cv2
 import glob
-import os
+import sys
+
+import torch
+import torchvision.transforms.functional as functional
+
+# BasicSR compatibility fix
+sys.modules["torchvision.transforms.functional_tensor"] = functional
+
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.utils.download_util import load_file_from_url
 

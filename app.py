@@ -24,51 +24,6 @@ OUTPUT_DIR = BASE_DIR / "output" / "enhanced"
 SUPPORTED_FORMATS = ["jpg", "jpeg", "png"]
 
 
-
-def fix_basicsr_compatibility():
-
-    # Locate the installed BasicSR package
-    spec = importlib.util.find_spec("basicsr")
-
-    if spec is None or not spec.submodule_search_locations:
-        raise RuntimeError("BasicSR package was not found.")
-
-    basicsr_dir = Path(
-        next(iter(spec.submodule_search_locations))
-    )
-
-    degradations_file = (
-        basicsr_dir / "data" / "degradations.py"
-    )
-
-    content = degradations_file.read_text(encoding="utf-8")
-
-    old_import = (
-        "from torchvision.transforms.functional_tensor "
-        "import rgb_to_grayscale"
-    )
-
-    new_import = (
-        "from torchvision.transforms.functional "
-        "import rgb_to_grayscale"
-    )
-
-    if old_import in content:
-
-        content = content.replace(old_import, new_import)
-
-        degradations_file.write_text(
-            content,
-            encoding="utf-8"
-        )
-
-    elif new_import not in content:
-
-        raise RuntimeError(
-            "Could not apply BasicSR compatibility fix."
-        )
-
-
 # --------------------------------------------------
 # 2. STREAMLIT PAGE SETTINGS
 # --------------------------------------------------
@@ -208,9 +163,6 @@ if uploaded_file is not None:
                             "--fp32",
                             "-t", "256"
                         ]
-
-                        # Fix BasicSR and Torchvision compatibility
-                        fix_basicsr_compatibility()
 
                         # Execute Real-ESRGAN
                         result = subprocess.run(
