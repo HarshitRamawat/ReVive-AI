@@ -1,3 +1,5 @@
+print("REVIVE_DIAGNOSTIC_2026_START", flush=True)
+
 import importlib.metadata
 
 for package in ["opencv-python", "opencv-python-headless", "opencv-contrib-python", "opencv-contrib-python-headless"]:
