@@ -6,6 +6,15 @@ for package in ["opencv-python", "opencv-python-headless", "opencv-contrib-pytho
     except importlib.metadata.PackageNotFoundError:
         print(f"{package}: NOT INSTALLED")
 
+from importlib.metadata import distributions
+
+print("\n--- PACKAGES REQUESTING OPENCV ---")
+
+for dist in distributions():
+    for requirement in dist.requires or []:
+        if "opencv" in requirement.lower():
+            print(f"{dist.metadata['Name']} requires: {requirement}")
+
 import importlib.util
 import streamlit as st
 import subprocess
