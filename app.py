@@ -1,3 +1,10 @@
+import importlib.metadata
+
+for package in ["opencv-python", "opencv-python-headless", "opencv-contrib-python", "opencv-contrib-python-headless"]:
+    try:
+        print(f"{package}: {importlib.metadata.version(package)}")
+    except importlib.metadata.PackageNotFoundError:
+        print(f"{package}: NOT INSTALLED")
 
 import importlib.util
 import streamlit as st
