@@ -1,0 +1,10 @@
+numpy
+Pillow
+opencv-python
+torch
+torchvision
+gradio
+tqdm
+scikit-image
+streamlit
+-e ./third_party/Real-ESRGAN
