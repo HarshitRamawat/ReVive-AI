@@ -1,50 +1,38 @@
-print("REVIVE_DIAGNOSTIC_2026_START", flush=True)
 
-import importlib.metadata
-
-for package in ["opencv-python", "opencv-python-headless", "opencv-contrib-python", "opencv-contrib-python-headless"]:
-    try:
-        print(f"{package}: {importlib.metadata.version(package)}")
-    except importlib.metadata.PackageNotFoundError:
-        print(f"{package}: NOT INSTALLED")
-
-from importlib.metadata import distributions
-
-print("\n--- PACKAGES REQUESTING OPENCV ---")
-
-for dist in distributions():
-    for requirement in dist.requires or []:
-        if "opencv" in requirement.lower():
-            print(f"{dist.metadata['Name']} requires: {requirement}")
-
-import importlib.util
-import streamlit as st
+import hashlib
+import io
 import subprocess
 import sys
 import tempfile
-import hashlib
-
 from pathlib import Path
 
+import streamlit as st
+from PIL import Image, ImageOps
 
-# --------------------------------------------------
-# 1. PROJECT PATHS
-# --------------------------------------------------
+
+# ==================================================
+# 1. PROJECT PATHS AND SETTINGS
+# ==================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_DIR = BASE_DIR / "third_party" / "Real-ESRGAN"
 MODEL_SCRIPT = MODEL_DIR / "inference_realesrgan.py"
+MODEL_WEIGHTS = MODEL_DIR / "weights" / "RealESRGAN_x4plus.pth"
 
 INPUT_DIR = BASE_DIR / "input" / "uploads"
 OUTPUT_DIR = BASE_DIR / "output" / "enhanced"
 
 SUPPORTED_FORMATS = ["jpg", "jpeg", "png"]
 
+MAX_INPUT_DIMENSION = 768
+ENHANCEMENT_TIMEOUT = 300
+MODEL_TILE_SIZE = 256
 
-# --------------------------------------------------
-# 2. STREAMLIT PAGE SETTINGS
-# --------------------------------------------------
+
+# ==================================================
+# 2. STREAMLIT CONFIGURATION
+# ==================================================
 
 st.set_page_config(
     page_title="ReVive AI",
@@ -53,11 +41,74 @@ st.set_page_config(
 )
 
 
-# --------------------------------------------------
-# 3. APPLICATION HEADER
-# --------------------------------------------------
+# ==================================================
+# 3. IMAGE PREPARATION FUNCTION
+# ==================================================
+
+def prepare_image(image_bytes, filename, destination):
+
+    with Image.open(io.BytesIO(image_bytes)) as image:
+
+        # Correct image orientation using EXIF information.
+        image = ImageOps.exif_transpose(image)
+
+        original_size = image.size
+
+        # Resize proportionally to reduce CPU workload.
+        image.thumbnail(
+            (MAX_INPUT_DIMENSION, MAX_INPUT_DIMENSION),
+            Image.Resampling.LANCZOS
+        )
+
+        prepared_size = image.size
+
+        extension = Path(filename).suffix.lower()
+
+        if extension in [".jpg", ".jpeg"]:
+
+            image = image.convert("RGB")
+
+            image.save(
+                destination,
+                format="JPEG",
+                quality=95,
+                optimize=True
+            )
+
+        else:
+
+            if image.mode not in ["RGB", "RGBA"]:
+                image = image.convert("RGB")
+
+            image.save(
+                destination,
+                format="PNG",
+                optimize=True
+            )
+
+    return original_size, prepared_size
+
+
+# ==================================================
+# 4. FIND GENERATED IMAGE
+# ==================================================
+
+def find_generated_images(folder):
+
+    return [
+        file
+        for file in folder.iterdir()
+        if file.is_file()
+        and file.suffix.lower() in [".jpg", ".jpeg", ".png"]
+    ]
+
+
+# ==================================================
+# 5. APPLICATION HEADER
+# ==================================================
 
 st.title("✨ ReVive AI")
+
 st.subheader("AI-Powered Image Enhancement")
 
 st.write(
@@ -65,12 +116,17 @@ st.write(
     "its resolution and details."
 )
 
+st.caption(
+    "Large images are automatically resized "
+    "to improve processing performance."
+)
+
 st.divider()
 
 
-# --------------------------------------------------
-# 4. IMAGE UPLOAD
-# --------------------------------------------------
+# ==================================================
+# 6. IMAGE UPLOAD
+# ==================================================
 
 uploaded_file = st.file_uploader(
     "Choose an image",
@@ -78,26 +134,35 @@ uploaded_file = st.file_uploader(
 )
 
 
-if uploaded_file is not None:
+if uploaded_file is None:
+
+    st.info(
+        "Upload a JPG, JPEG, or PNG image to get started."
+    )
+
+else:
 
     original_name = Path(uploaded_file.name).name
+
     image_bytes = uploaded_file.getvalue()
 
-    # Unique identifier for the uploaded image
-    image_id = hashlib.md5(image_bytes).hexdigest()
+    image_id = hashlib.sha256(image_bytes).hexdigest()
 
-    st.success(f"Uploaded successfully: {original_name}")
+    st.success(
+        f"Uploaded successfully: {original_name}"
+    )
 
-    # Reset previous result when a different image is uploaded
+    # Clear previous results when a different image is uploaded.
     if st.session_state.get("image_id") != image_id:
 
         st.session_state["image_id"] = image_id
+
         st.session_state.pop("enhanced_image", None)
         st.session_state.pop("enhanced_name", None)
 
-    # --------------------------------------------------
-    # 5. ORIGINAL AND ENHANCED IMAGE LAYOUT
-    # --------------------------------------------------
+    # ==================================================
+    # 7. ORIGINAL AND ENHANCED IMAGE DISPLAY
+    # ==================================================
 
     original_col, enhanced_col = st.columns(
         2,
@@ -135,10 +200,9 @@ if uploaded_file is not None:
 
     st.divider()
 
-
-    # --------------------------------------------------
-    # 6. ENHANCE IMAGE BUTTON
-    # --------------------------------------------------
+    # ==================================================
+    # 8. ENHANCE IMAGE BUTTON
+    # ==================================================
 
     if st.button(
         "✨ Enhance Image",
@@ -146,108 +210,195 @@ if uploaded_file is not None:
         use_container_width=True
     ):
 
-        # Create required directories
-        INPUT_DIR.mkdir(parents=True, exist_ok=True)
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        # Check whether required model files exist.
+        missing_files = []
 
-        with st.spinner(
-            "ReVive AI is enhancing your image. Please wait..."
-        ):
+        if not MODEL_SCRIPT.is_file():
+            missing_files.append(str(MODEL_SCRIPT))
+
+        if not MODEL_WEIGHTS.is_file():
+            missing_files.append(str(MODEL_WEIGHTS))
+
+        if missing_files:
+
+            st.error("Required Real-ESRGAN files are missing.")
+
+            for missing_file in missing_files:
+                st.code(missing_file)
+
+        else:
+
+            # Remove an old result before starting another run.
+            st.session_state.pop("enhanced_image", None)
+            st.session_state.pop("enhanced_name", None)
+
+            INPUT_DIR.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            OUTPUT_DIR.mkdir(
+                parents=True,
+                exist_ok=True
+            )
 
             try:
 
-                # Temporary input and output folders
-                with tempfile.TemporaryDirectory(
-                    dir=INPUT_DIR
-                ) as input_temp:
+                with st.spinner(
+                    "ReVive AI is enhancing your image. "
+                    "Please wait..."
+                ):
 
                     with tempfile.TemporaryDirectory(
-                        dir=OUTPUT_DIR
-                    ) as output_temp:
+                        dir=INPUT_DIR
+                    ) as input_temp:
 
-                        input_path = Path(input_temp) / original_name
-                        output_path = Path(output_temp)
+                        with tempfile.TemporaryDirectory(
+                            dir=OUTPUT_DIR
+                        ) as output_temp:
 
-                        # Save uploaded image temporarily
-                        input_path.write_bytes(image_bytes)
-
-                        # Real-ESRGAN command
-                        command = [
-                            sys.executable,
-                            str(MODEL_SCRIPT),
-                            "-n", "RealESRGAN_x4plus",
-                            "-i", str(input_path),
-                            "-o", str(output_path),
-                            "--fp32",
-                            "-t", "256"
-                        ]
-
-                        # Execute Real-ESRGAN
-                        result = subprocess.run(
-                            command,
-                            cwd=str(MODEL_DIR),
-                            capture_output=True,
-                            text=True
-                        )
-
-                        # Check whether enhancement failed
-                        if result.returncode != 0:
-
-                            st.error(
-                                "Image enhancement failed."
+                            input_path = (
+                                Path(input_temp) / original_name
                             )
 
-                            if result.stderr:
-                                st.code(result.stderr)
+                            output_path = Path(output_temp)
 
-                            if result.stdout:
-                                st.code(result.stdout)
+                            # Prepare and resize the uploaded image.
+                            original_size, prepared_size = prepare_image(
+                                image_bytes,
+                                original_name,
+                                input_path
+                            )
 
-                        else:
+                            if prepared_size != original_size:
 
-                            # Find the generated image
-                            generated_files = [
-                                file
-                                for file in output_path.iterdir()
-                                if file.is_file()
-                                and file.suffix.lower()
-                                in [".jpg", ".jpeg", ".png"]
+                                st.info(
+                                    f"Image resized from "
+                                    f"{original_size[0]} x {original_size[1]} "
+                                    f"to {prepared_size[0]} x "
+                                    f"{prepared_size[1]}."
+                                )
+
+                            # Real-ESRGAN inference command.
+                            command = [
+
+                                sys.executable,
+
+                                str(MODEL_SCRIPT),
+
+                                "-n",
+                                "RealESRGAN_x4plus",
+
+                                "-i",
+                                str(input_path),
+
+                                "-o",
+                                str(output_path),
+
+                                "--fp32",
+
+                                "-t",
+                                str(MODEL_TILE_SIZE)
                             ]
 
-                            if not generated_files:
+                            # Execute model with a maximum time limit.
+                            try:
+
+                                result = subprocess.run(
+
+                                    command,
+
+                                    cwd=str(MODEL_DIR),
+
+                                    capture_output=True,
+
+                                    text=True,
+
+                                    timeout=ENHANCEMENT_TIMEOUT,
+
+                                    check=False
+                                )
+
+                            except subprocess.TimeoutExpired:
 
                                 st.error(
-                                    "Enhanced image was not found."
+                                    "Enhancement exceeded the "
+                                    "5-minute time limit."
                                 )
 
-                                if result.stdout:
-                                    st.code(result.stdout)
-
-                            else:
-
-                                enhanced_file = generated_files[0]
-
-                                # Read enhanced image before
-                                # temporary folder is deleted
-                                enhanced_bytes = enhanced_file.read_bytes()
-
-                                # Save result in Streamlit session
-                                st.session_state["enhanced_image"] = (
-                                    enhanced_bytes
+                                st.warning(
+                                    "The cloud CPU may be throttled "
+                                    "or the image may be too demanding. "
+                                    "Try again later or use GPU hosting."
                                 )
 
-                                st.session_state["enhanced_name"] = (
-                                    Path(original_name).stem
-                                    + "_enhanced"
-                                    + enhanced_file.suffix
-                                )
+                                result = None
 
-                                st.success(
-                                    "Your image has been enhanced successfully!"
-                                )
+                            if result is not None:
 
-                                # Refresh the app to show the result
-                                st.rerun()
+                                # Check model execution status.
+                                if result.returncode != 0:
+
+                                    st.error(
+                                        "Real-ESRGAN failed to enhance "
+                                        "the image."
+                                    )
+
+                                    error_message = (
+                                        result.stderr.strip()
+                                        or result.stdout.strip()
+                                        or "No error details were returned."
+                                    )
+
+                                    st.code(
+                                        error_message[-12000:]
+                                    )
+
+                                else:
+
+                                    generated_files = (
+                                        find_generated_images(output_path)
+                                    )
+
+                                    if not generated_files:
+
+                                        st.error(
+                                            "Model execution finished, "
+                                            "but no enhanced image was found."
+                                        )
+
+                                        if result.stdout:
+                                            st.code(result.stdout[-12000:])
+
+                                    else:
+
+                                        enhanced_file = generated_files[0]
+
+                                        enhanced_bytes = (
+                                            enhanced_file.read_bytes()
+                                        )
+
+                                        enhanced_name = (
+                                            Path(original_name).stem
+                                            + "_enhanced"
+                                            + enhanced_file.suffix.lower()
+                                        )
+
+                                        # Store enhanced result.
+                                        st.session_state[
+                                            "enhanced_image"
+                                        ] = enhanced_bytes
+
+                                        st.session_state[
+                                            "enhanced_name"
+                                        ] = enhanced_name
+
+                                        st.success(
+                                            "Your image has been enhanced "
+                                            "successfully!"
+                                        )
+
+                                        st.rerun()
 
             except Exception as error:
 
@@ -255,28 +406,27 @@ if uploaded_file is not None:
                     f"An unexpected error occurred: {error}"
                 )
 
-
-    # --------------------------------------------------
-    # 7. DOWNLOAD ENHANCED IMAGE
-    # --------------------------------------------------
+    # ==================================================
+    # 9. DOWNLOAD ENHANCED IMAGE
+    # ==================================================
 
     if "enhanced_image" in st.session_state:
 
         st.download_button(
+
             label="⬇ Download Enhanced Image",
+
             data=st.session_state["enhanced_image"],
+
             file_name=st.session_state["enhanced_name"],
+
             mime=(
                 "image/png"
                 if st.session_state["enhanced_name"].lower().endswith(".png")
                 else "image/jpeg"
             ),
+
             type="primary",
+
             use_container_width=True
         )
-
-else:
-
-    st.info(
-        "Upload a JPG, JPEG, or PNG image to get started."
-    )
